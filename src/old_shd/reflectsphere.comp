@@ -1,0 +1,90 @@
+#version 460 core
+
+layout (local_size_x = 32, local_size_y = 32) in;
+
+struct Sphere {
+    vec3 pos;
+    float rad;
+};
+
+layout (std140, binding = 0) readonly buffer Spheres {
+    Sphere spheres[];
+} spheres;
+
+layout (rgba32f, location = 0) writeonly uniform image2D tex;
+layout (location = 1) uniform mat2x3 cam;
+layout (std140, binding = 1) readonly uniform pconst {
+    ivec2 res;
+    vec2 inv_res;
+    vec3 sun_dir;
+    vec4 ground;
+    vec4 horizon;
+    vec4 zenith;
+    float horz_dist;
+    float fov;
+    float asp_rat;
+};
+
+
+
+const vec2 consts = vec2(0.0, 0.1);
+const float half_pi = 1.571;
+
+const uint num_reflects = 5;
+
+
+vec4 sample_env(vec3 pos, vec3 dir);
+
+
+void main(void) {
+    ivec2 texel = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 img_size = imageSize(tex);
+
+    if (all(lessThan(texel, img_size))) {
+        float horz = sin(fov) * (texel.x - ((res.x >> 1) + 1)) * inv_res.x;
+        float vert = sin(fov * asp_rat) * (texel.y - ((res.y >> 1) + 1)) * inv_res.y;
+        vec3 start = normalize(vec3(horz, vert, 1.0));
+        vec3 ray_pos = cam[0];
+        float shade = 1.0;
+        
+        uint num = spheres.spheres.length();
+        for (uint r = 0; r < num_reflects; ++r) {
+            uint i;
+            for (i = 0; i < num; ++i) {
+                Sphere sphere = spheres.spheres[i];
+                vec3 diff = sphere.pos - ray_pos;
+                float mid = dot(diff, start);
+                float discrim = fma(mid, mid, -dot(diff, diff));
+                discrim = fma(sphere.rad, sphere.rad, discrim);
+                if (discrim < 0)
+                    continue;
+                mid -= sqrt(discrim);
+                if (mid < 0)
+                    continue;
+                ray_pos += mid * start;
+                if (dot(ray_pos - sphere.pos, start) > 0)
+                    continue;
+                vec3 norm = normalize(ray_pos - sphere.pos);
+                start = reflect(start, norm);
+                shade *= fma(dot(start, sun_dir), 0.25, 0.75);
+                break;
+            }
+            if (i == num)
+                break;
+        }
+        imageStore(tex, texel, sample_env(ray_pos, start));
+    }
+}
+
+vec4 sample_env(vec3 pos, vec3 dir) {
+    if (fma(dir.y, horz_dist, pos.y) < 0) {
+        vec2 gpos = dir.xz * (pos.y / dir.y);
+        gpos = mod(gpos, 2);
+        return ((gpos.x < 1) ^^ (gpos.y < 1)) ? vec4(0.0, 1.0, 1.0, 1.0) : vec4(1.0, 0.0, 0.0, 1.0);
+    }
+    
+    float temp = half_pi * horz_dist;
+    float blend = fma(dir.y, -horz_dist, temp) / (temp + pos.y);
+    blend = pow(blend, 8);
+    return mix(zenith, horizon, blend);
+}
