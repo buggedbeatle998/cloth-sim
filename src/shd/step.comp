@@ -1,0 +1,36 @@
+#version 460 core
+
+layout (local_size_x = 32, local_size_y = 32) in;
+
+struct Sphere {
+    vec3 pos;
+    float rad;
+};
+
+layout (std140, binding = 0) buffer Spheres {
+    Sphere spheres[];
+} spheres;
+
+layout (std140, binding = 1) readonly buffer Fixed {
+    int fixed_spheres[];
+} fixed_spheres;
+
+layout (location = 0) uniform int side_len;
+layout (location = 1) uniform float dt;
+
+
+float grav = 9.8;
+float sprk = 1.0;
+
+
+void main(void) {
+    ivec2 id = ivec2(gl_GlobalInvocationID.xy);
+
+    if (all(lessThan(id, vec2(side_len)))) {
+        int idx = id.x * side_len + id.y;
+        float realdt = dt / 1000;
+
+        spheres.spheres[idx].pos.y += realdt;
+    }
+}
+

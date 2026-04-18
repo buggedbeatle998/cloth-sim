@@ -30,8 +30,6 @@ layout (std140, binding = 1) readonly uniform pconst {
 const vec2 consts = vec2(0.0, 0.1);
 const float half_pi = 1.571;
 
-const uint num_reflects = 10;
-
 
 vec3 sample_env(vec3 pos, vec3 dir);
 
@@ -42,49 +40,56 @@ void main(void) {
 
     if (all(lessThan(texel, img_size))) {
         float horz = sin(fov) * (texel.x - ((res.x >> 1) + 1)) * inv_res.x;
-        float vert = sin(fov * asp_rat) * (texel.y - ((res.y >> 1) + 1)) * inv_res.y;
+        float vert_fov = 2 * atan(tan(fov / 2) * asp_rat);
+        float vert = sin(vert_fov) * (texel.y - ((res.y >> 1) + 1)) * inv_res.y;
+        float sinx = sin(cam[1][0]);
+        float cosx = cos(cam[1][0]);
+        float siny = sin(cam[1][1]);
+        float cosy = cos(cam[1][1]);
         vec3 start = normalize(vec3(horz, vert, 1.0));
+        mat3 rot = mat3(cosy        , 0.0 , -siny       ,
+                        -sinx * siny, cosx, -sinx * cosy,
+                        cosx * siny , sinx, cosx * cosy );
+        start = rot * start;
         vec3 ray_pos = cam[0];
         float shade = 1.0;
         
         uint num = spheres.spheres.length();
-        for (uint r = 0; r < num_reflects; ++r) {
-            bool hit = false;
-            float dist;
-            vec3 _change;
-            vec3 _norm;
-            uint i;
-            for (i = 0; i < num; ++i) {
-                Sphere sphere = spheres.spheres[i];
-                vec3 diff = sphere.pos - ray_pos;
-                float mid = dot(diff, start);
-                float discrim = fma(mid, mid, -dot(diff, diff));
-                discrim = fma(sphere.rad, sphere.rad, discrim);
-                if (discrim < 0)
-                    continue;
-                mid -= sqrt(discrim);
-                if (mid < 0)
-                    continue;
-                if (dot(mid * start - diff, start) > 0) {
-                    continue;
-                }
-                if (hit) {
-                    if (mid > dist)
-                        continue;
-                } else
-                    hit = true;
-                dist = mid;
-                _change = mid * start;
-                _norm = normalize(_change - diff);
+        bool hit = false;
+        float dist;
+        vec3 _change;
+        vec3 _norm;
+        uint i;
+        for (i = 0; i < num; ++i) {
+            Sphere sphere = spheres.spheres[i];
+            vec3 diff = sphere.pos - ray_pos;
+            float mid = dot(diff, start);
+            float discrim = fma(mid, mid, -dot(diff, diff));
+            discrim = fma(sphere.rad, sphere.rad, discrim);
+            if (discrim < 0)
+                continue;
+            mid -= sqrt(discrim);
+            if (mid < 0)
+                continue;
+            if (dot(mid * start - diff, start) > 0) {
+                continue;
             }
             if (hit) {
-                ray_pos += _change;
-                start = reflect(start, _norm);
-                shade *= fma(dot(start, sun_dir), 0.25, 0.75);
+                if (mid > dist)
+                    continue;
             } else
-                break;
+                hit = true;
+            dist = mid;
+            _change = mid * start;
+            _norm = normalize(_change - diff);
         }
-        imageStore(tex, texel, vec4(sample_env(ray_pos, start) * shade, 1.0));
+        if (hit) {
+            ray_pos += _change;
+            start = reflect(start, _norm);
+            shade *= fma(dot(start, sun_dir), 0.25, 0.75);
+            imageStore(tex, texel, vec4(vec3(shade), 1.0));
+        } else
+            imageStore(tex, texel, vec4(sample_env(ray_pos, start), 1.0));
     }
 }
 

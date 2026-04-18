@@ -4,6 +4,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <time.h>
+#include <math.h>
 
 #include "../include/glad/glad.h"
 #include <SDL3/SDL.h>
@@ -12,6 +13,7 @@
 #include "stb_image.h"
 
 #define SPEED 0.05f
+#define ANG_SPEED 0.01f
 
 static float rand_float(float lower, float upper) {
     return (float)rand() / RAND_MAX * (upper - lower) + lower;
@@ -63,19 +65,30 @@ GLuint load_shd(const char *filename, GLenum type, const char *entry);
 void shd_loadatt(GLuint program, const char *filename, GLenum type, const char *entry);
 GLuint make_draw_tex(const size_t tex_w, const size_t tex_h, GLenum texture);
 GLuint make_buffer(GLenum type, GLenum usage, size_t size, const void *data);
-uint8_t handle_keys(SDL_Event ev, uint8_t velo);
-void handle_move(Camera *cam, uint8_t velo);
+void handle_keys(SDL_Event ev, uint8_t *velo_ptr, uint8_t *ang_velo_ptr);
+void handle_move(Camera *cam, uint8_t velo, uint8_t ang_velo);
 
 int main(void) {
     if (!SDL_Init(SDL_INIT_VIDEO))
         return -1;
-   
-    const size_t num_spheres = 10;
-    Sphere *sphere_arr = malloc(sizeof(Sphere) * num_spheres);
-    for (size_t i = 0; i < num_spheres; ++i) {
-        sphere_arr[i] = (Sphere){{rand_float(-5.f, 5.f), rand_float(5.f, 15.f), rand_float(5.f, 15.f)}, 1.f};
+  
+    const size_t side_len = 10;
+    const size_t num_spheres = side_len * side_len;
+    Sphere *sphere_arr = malloc(sizeof(Sphere) * num_spheres * num_spheres);
+    for (size_t x = 0; x < side_len; ++x) {
+        for (size_t z = 0; z < side_len; ++z) {
+            sphere_arr[x * side_len + z] = (Sphere){{(float)x, 5.f, (float)z}, .2f};
+        }
     }
-    Camera main_cam = {{0.f, 10.f, 0.f, 0.f, 0.f, 1.f}};
+
+    const size_t num_fixed = 4;
+    int *fixed_arr = malloc(sizeof(int) * num_fixed);
+    fixed_arr[0] = 0;
+    fixed_arr[1] = side_len - 1;
+    fixed_arr[2] = num_spheres - side_len;
+    fixed_arr[3] = num_spheres - 1;
+
+    Camera main_cam = {{0.f, 10.f, 0.f, 0.f, 0.f, 0.f}};
     
     const int tex_w = 1280;
     const int tex_h = 960;
@@ -98,9 +111,13 @@ int main(void) {
     GLuint vert_buff = make_buffer(GL_ARRAY_BUFFER, GL_STATIC_DRAW,
             sizeof(vertices), vertices);
 
-    GLuint spheres = make_buffer(GL_SHADER_STORAGE_BUFFER, GL_STATIC_READ,
+    GLuint spheres = make_buffer(GL_SHADER_STORAGE_BUFFER, GL_DYNAMIC_READ,
             sizeof(Sphere) * num_spheres, sphere_arr);
     free(sphere_arr);
+    
+    GLuint fixed = make_buffer(GL_SHADER_STORAGE_BUFFER, GL_STATIC_READ,
+            sizeof(int) * num_fixed, fixed_arr);
+    free(fixed_arr);
 
     GLuint consts = make_buffer(GL_UNIFORM_BUFFER, GL_STATIC_READ,
             sizeof(push_consts), &(push_consts){
@@ -123,38 +140,52 @@ int main(void) {
 
     GLuint ray_text = make_draw_tex(tex_w, tex_h, GL_TEXTURE0);
     
-    const GLuint compute = glad_glCreateProgram();
-    shd_loadatt(compute, "../shd/raytrace.comp.spv", GL_COMPUTE_SHADER, "main");
-    glad_glLinkProgram(compute);
+    const GLint physics = glad_glCreateProgram();
+    shd_loadatt(physics, "../shd/step.comp.spv", GL_COMPUTE_SHADER, "main");
+    glad_glLinkProgram(physics);
+
+    const GLuint raytrace = glad_glCreateProgram();
+    shd_loadatt(raytrace, "../shd/raytrace.comp.spv", GL_COMPUTE_SHADER, "main");
+    glad_glLinkProgram(raytrace);
 
     const GLuint program = glad_glCreateProgram();
     shd_loadatt(program, "../shd/texture.vert.spv", GL_VERTEX_SHADER, "main");
     shd_loadatt(program, "../shd/texture.frag.spv", GL_FRAGMENT_SHADER, "main");
     glad_glLinkProgram(program);
     
-    const GLint tex_loc = 0;
     const GLint vpos_loc = 0;
     const GLint cam_loc = 1;
 
-    const GLint sphere_bind = 0;
+    const GLint len_loc = 0;
+    const GLint time_loc = 1;
+    const GLint tex_loc = 0;
     const GLint const_bind = 1;
+
+    const GLint sphere_bind = 0;
+    const GLint fixed_bind = 1;
     
     glad_glEnableVertexAttribArray(vpos_loc);
     glad_glVertexAttribPointer(vpos_loc, 2, GL_FLOAT, GL_FALSE, sizeof(float) * 2, (void *)0);
 
-    glad_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, sphere_bind, spheres);
     glad_glBindBufferBase(GL_UNIFORM_BUFFER, const_bind, consts);
+    glad_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, sphere_bind, spheres);
+    glad_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, fixed_bind, fixed);
     
-    glad_glUseProgram(compute);    
+    glad_glUseProgram(physics);
+    glad_glUniform1i(len_loc, side_len);
+    glad_glUseProgram(raytrace);
     glad_glUniform1i(tex_loc, 0);
     glad_glUseProgram(program);    
     glad_glUniform1i(tex_loc, 0);
 
     uint8_t velo = 0U;
+    uint8_t ang_velo = 0U;
+    const GLuint physics_dispatch_num = (side_len + 31) / 32;
     int width, height;
+    time_t tstart = SDL_GetPerformanceCounter();
+    time_t telapsed;
     bool run = true;
     while (run) {
-        //time_t tstart = SDL_GetPerformanceCounter();
 
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
@@ -165,27 +196,39 @@ int main(void) {
                 
                 case SDL_EVENT_KEY_DOWN:
                 case SDL_EVENT_KEY_UP:
-                    velo = handle_keys(ev, velo);
+                    handle_keys(ev, &velo, &ang_velo);
                     break;
 
                 default:
                     break;
             }
         }
-        if (velo)
-            handle_move(&main_cam, velo);
+        if (velo || ang_velo)
+            handle_move(&main_cam, velo, ang_velo);
 
         SDL_RenderClear(screen);
         SDL_GetWindowSize(window, &width, &height);
         glad_glViewport(0, 0, width, height);
 
-        glad_glUseProgram(compute);
+        // Start physics step
+        glad_glUseProgram(physics);
+       
+        telapsed = (float)(SDL_GetPerformanceCounter() - tstart) / SDL_GetPerformanceFrequency() * 1000;
+        tstart = SDL_GetPerformanceCounter();
+        glad_glUniform1f(time_loc, telapsed);
+        glad_glDispatchCompute(physics_dispatch_num, physics_dispatch_num, 1);
+
+        glad_glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+        // Start raytracing
+        glad_glUseProgram(raytrace);
         
         glad_glUniformMatrix2x3fv(cam_loc, 1, GL_FALSE, main_cam.data);
         glad_glDispatchComputeIndirect(0);
         
         glad_glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
+        // Display to screen
         glad_glUseProgram(program);
 
         glad_glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -194,10 +237,6 @@ int main(void) {
         SDL_RenderPresent(screen);
 
         SDL_GL_SwapWindow(window);
-
-        //time_t tend = SDL_GetPerformanceCounter();
-        //float telapsed = (float)(tend - tstart) / SDL_GetPerformanceFrequency() * 1000;
-        //SDL_Delay(floor(stpf - telapsed));
     }
     
     glad_glDeleteProgram(program);
@@ -273,7 +312,9 @@ GLuint make_buffer(GLenum type, GLenum usage, size_t size, const void *data) {
 }
 
 
-uint8_t handle_keys(SDL_Event ev, uint8_t velo) {
+void handle_keys(SDL_Event ev, uint8_t *velo_ptr, uint8_t *ang_velo_ptr) {
+    uint8_t velo = *velo_ptr;
+    uint8_t ang_velo = *ang_velo_ptr;
     switch (ev.key.key) {
         case SDLK_LEFT:
             velo &= ~1U;
@@ -299,18 +340,38 @@ uint8_t handle_keys(SDL_Event ev, uint8_t velo) {
             velo &= ~(1U << 6);
             velo |= ev.key.down << 6;
             break;
+
+        case SDLK_S:
+            ang_velo &= ~1U;
+            ang_velo |= ev.key.down;
+            break;
+        case SDLK_W:
+            ang_velo &= ~(1U << 4);
+            ang_velo |= ev.key.down << 4;
+            break;
+        case SDLK_A:
+            ang_velo &= ~(1U << 1);
+            ang_velo |= ev.key.down << 1;
+            break;
+        case SDLK_D:
+            ang_velo &= ~(1U << 5);
+            ang_velo |= ev.key.down << 5;
+            break;
+
         default:
             break;
     }
 
-    return velo;
+    *velo_ptr = velo;
+    *ang_velo_ptr = ang_velo;
 }
 
 
-void handle_move(Camera *cam, uint8_t velo) {
+void handle_move(Camera *cam, uint8_t velo, uint8_t ang_velo) {
     velo ^= velo >> 4;
     if (velo & 1) {
-        cam->data[0] += (-0.5f + ((velo >> 4) & 1)) * SPEED;
+        cam->data[0] += (-0.5f + ((velo >> 4) & 1)) * SPEED * cos(cam->data[4]);
+        cam->data[2] += (-0.5f + ((velo >> 4) & 1)) * SPEED * -sin(cam->data[4]);
     }
     velo >>= 1;
     if (velo & 1) {
@@ -318,6 +379,16 @@ void handle_move(Camera *cam, uint8_t velo) {
     }
     velo >>= 1;
     if (velo & 1) {
-        cam->data[2] += (-0.5f + ((velo >> 4) & 1)) * SPEED;
+        cam->data[0] += (-0.5f + ((velo >> 4) & 1)) * SPEED * sin(cam->data[4]);
+        cam->data[2] += (-0.5f + ((velo >> 4) & 1)) * SPEED * cos(cam->data[4]);
+    }
+
+    ang_velo ^= ang_velo >> 4;
+    if (ang_velo & 1) {
+        cam->data[3] += (-0.5f + ((ang_velo >> 4) & 1)) * ANG_SPEED;
+    }
+    ang_velo >>= 1;
+    if (ang_velo & 1) {
+        cam->data[4] += (-0.5f + ((ang_velo >> 4) & 1)) * ANG_SPEED;
     }
 }
