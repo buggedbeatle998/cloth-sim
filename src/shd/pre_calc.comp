@@ -1,0 +1,105 @@
+#version 460 core
+
+layout (local_size_x = 32, local_size_y = 32) in;
+
+
+layout (std140, binding = 0) readonly buffer Spheres_Pos {
+    vec3 pos[];
+} pos;
+layout (std430, align = 16, binding = 2) readonly buffer Spheres_Fixed {
+    int sfixed[];
+} sfixed;
+layout (std140, binding = 3) writeonly buffer Temp_Forces {
+    vec3 force[];
+} force;
+
+layout (location = 0) uniform int side_len;
+layout (location = 1) uniform float dt;
+
+
+const vec2 consts = vec2(0.0, 0.1);
+const float grav = -10.0;
+const float emod = 10.0;
+const float mass = 0.01;
+const float nat_struct = 1.0;
+const float inv_nat_struct = 1.0 / nat_struct;
+const float nat_shear = sqrt(2);
+const float inv_nat_shear = 1.0 / nat_shear;
+
+
+vec3 calc_force(int idx, vec3 _pos, ivec2 id);
+vec3 get_vec_to_ex(int to, vec3 from, bool diag);
+bool search_fixed(int idx);
+
+void main(void) {
+    ivec2 id = ivec2(gl_GlobalInvocationID.xy);
+
+    if (all(lessThan(id, vec2(side_len)))) {
+        int idx = id.x * side_len + id.y;
+        //if (search_fixed(idx))
+        //    return;
+        for (int i = 0; i < sfixed.sfixed.length() / 4; ++i)
+            if (sfixed.sfixed[i] == idx)
+                return;
+
+        force.force[idx] = calc_force(idx, pos.pos[idx], id);
+    }
+}
+
+vec3 calc_force(int idx, vec3 _pos, ivec2 id) {
+    vec3 total = vec3(0.0, mass * grav, 0.0);
+    
+    vec3 tofc = vec3(0.0);
+    vec3 tofd = vec3(0.0);
+    if (id.x < side_len - 1) {
+        tofc = get_vec_to_ex(idx + side_len, _pos, false);
+        if (id.y < side_len - 1)
+            tofd = get_vec_to_ex(idx + side_len + 1, _pos, true);
+        if (id.y > 0)
+            tofd += get_vec_to_ex(idx + side_len - 1, _pos, true);
+    }
+    if (id.x > 0) {
+        tofc += get_vec_to_ex(idx - side_len, _pos, false);
+        if (id.y < side_len - 1)
+            tofd += get_vec_to_ex(idx - side_len + 1, _pos, true);
+        if (id.y > 0)
+            tofd += get_vec_to_ex(idx - side_len - 1, _pos, true);
+    }
+    if (id.y < side_len - 1)
+        tofc += get_vec_to_ex(idx + 1, _pos, false);
+    if (id.y > 0)
+        tofd += get_vec_to_ex(idx - 1, _pos, false);
+    
+    tofc = fma(tofd, vec3(inv_nat_shear), tofc * inv_nat_struct);
+
+    total = fma(tofc, vec3(emod), total);
+    
+    return total;
+}
+
+
+vec3 get_vec_to_ex(int to, vec3 from, bool diag) {
+    vec3 tofrom = pos.pos[to] - from;
+    float dotted = dot(tofrom, tofrom);
+    if (dotted > 0.0)
+        return tofrom * fma(-(diag ? nat_shear : nat_struct), inversesqrt(dotted), 1.0);
+    return vec3(0.0);//tofrom * fma(-(diag ? nat_shear : nat_struct), inversesqrt(0.1), 1.0);
+}
+
+
+//bool search_fixed(int idx) {
+//    int left = 0;
+//    int right = sfixed.sfixed.length();
+//    int mid, val;
+//    while (right > left) {
+//        mid = (left + right) >> 1;
+//        val = sfixed.sfixed[mid];
+//        if (idx == val)
+//            return true;
+//        else if (idx < val)
+//            right = mid - 1;
+//        else
+//            left = mid + 1;
+//    }
+//    return false;
+//}

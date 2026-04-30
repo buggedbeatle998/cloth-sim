@@ -33,11 +33,6 @@ typedef struct {
 } drawarrindircmd;
 
 typedef struct {
-    vec3 pos;
-    float rad;
-} Sphere;
-
-typedef struct {
     float data[6];
 } Camera;
 
@@ -74,21 +69,30 @@ int main(void) {
   
     const size_t side_len = 10;
     const size_t num_spheres = side_len * side_len;
-    Sphere *sphere_arr = malloc(sizeof(Sphere) * num_spheres * num_spheres);
+
+    float *sphere_pos_arr = malloc(sizeof(float) * 4 * num_spheres);
     for (size_t x = 0; x < side_len; ++x) {
         for (size_t z = 0; z < side_len; ++z) {
-            sphere_arr[x * side_len + z] = (Sphere){{(float)x, 5.f, (float)z}, .2f};
+            sphere_pos_arr[(x * side_len + z) * 4 + 0] = (float)x;
+            sphere_pos_arr[(x * side_len + z) * 4 + 1] = 10.f;
+            sphere_pos_arr[(x * side_len + z) * 4 + 2] = (float)z;
         }
     }
 
-    const size_t num_fixed = 4;
+    float *sphere_velo_arr = malloc(sizeof(float) * 4 * num_spheres);
+    memset(sphere_velo_arr, 0, sizeof(float) * 4 * num_spheres);
+    
+    float *force_arr = malloc(sizeof(float) * 4 * num_spheres);
+    memset(force_arr, 0, sizeof(float) * 4 * num_spheres);
+
+    const size_t num_fixed = 3;
     int *fixed_arr = malloc(sizeof(int) * num_fixed);
     fixed_arr[0] = 0;
     fixed_arr[1] = side_len - 1;
-    fixed_arr[2] = num_spheres - side_len;
-    fixed_arr[3] = num_spheres - 1;
+    //fixed_arr[2] = num_spheres - side_len;
+    fixed_arr[2] = num_spheres - 1;
 
-    Camera main_cam = {{0.f, 10.f, 0.f, 0.f, 0.f, 0.f}};
+    Camera main_cam = {{(float)side_len / 2.f - .5f, 10.f, -10.f, 0.f, 0.f, 0.f}};
     
     const int tex_w = 1280;
     const int tex_h = 960;
@@ -111,13 +115,21 @@ int main(void) {
     GLuint vert_buff = make_buffer(GL_ARRAY_BUFFER, GL_STATIC_DRAW,
             sizeof(vertices), vertices);
 
-    GLuint spheres = make_buffer(GL_SHADER_STORAGE_BUFFER, GL_DYNAMIC_READ,
-            sizeof(Sphere) * num_spheres, sphere_arr);
-    free(sphere_arr);
+    GLuint posses = make_buffer(GL_SHADER_STORAGE_BUFFER, GL_DYNAMIC_READ,
+            sizeof(float) * 4 * num_spheres, sphere_pos_arr);
+    free(sphere_pos_arr);
+
+    GLuint velos = make_buffer(GL_SHADER_STORAGE_BUFFER, GL_DYNAMIC_READ,
+            sizeof(float) * 4 * num_spheres, sphere_velo_arr);
+    free(sphere_velo_arr);
     
-    GLuint fixed = make_buffer(GL_SHADER_STORAGE_BUFFER, GL_STATIC_READ,
-            sizeof(int) * num_fixed, fixed_arr);
+    GLuint fixed = make_buffer(GL_SHADER_STORAGE_BUFFER, GL_DYNAMIC_READ,
+            sizeof(int) * 4 * num_fixed, fixed_arr);
     free(fixed_arr);
+
+    GLuint forces = make_buffer(GL_SHADER_STORAGE_BUFFER, GL_DYNAMIC_READ,
+            sizeof(float) * 4 * num_spheres, force_arr);
+    free(force_arr);
 
     GLuint consts = make_buffer(GL_UNIFORM_BUFFER, GL_STATIC_READ,
             sizeof(push_consts), &(push_consts){
@@ -132,13 +144,19 @@ int main(void) {
         (float)tex_h / tex_w
     });
 
-    make_buffer(GL_DISPATCH_INDIRECT_BUFFER, GL_STATIC_READ,
+    GLuint disp_indir = make_buffer(GL_DISPATCH_INDIRECT_BUFFER, GL_STATIC_READ,
             sizeof(dispindircmd), &(dispindircmd){(tex_w + 31) / 32, (tex_h + 31) / 32, 1});
     
-    make_buffer(GL_DRAW_INDIRECT_BUFFER, GL_STATIC_READ,
+    GLuint draw_indir = make_buffer(GL_DRAW_INDIRECT_BUFFER, GL_STATIC_READ,
             sizeof(drawarrindircmd), &(drawarrindircmd){4, 1, 0, 0});
+    
+    GLuint buffs[8] = {draw_indir, disp_indir, consts, forces, fixed, velos, posses, vert_buff};
 
     GLuint ray_text = make_draw_tex(tex_w, tex_h, GL_TEXTURE0);
+    
+    const GLint pre_calc = glad_glCreateProgram();
+    shd_loadatt(pre_calc, "../shd/pre_calc.comp.spv", GL_COMPUTE_SHADER, "main");
+    glad_glLinkProgram(pre_calc);
     
     const GLint physics = glad_glCreateProgram();
     shd_loadatt(physics, "../shd/step.comp.spv", GL_COMPUTE_SHADER, "main");
@@ -148,10 +166,10 @@ int main(void) {
     shd_loadatt(raytrace, "../shd/raytrace.comp.spv", GL_COMPUTE_SHADER, "main");
     glad_glLinkProgram(raytrace);
 
-    const GLuint program = glad_glCreateProgram();
-    shd_loadatt(program, "../shd/texture.vert.spv", GL_VERTEX_SHADER, "main");
-    shd_loadatt(program, "../shd/texture.frag.spv", GL_FRAGMENT_SHADER, "main");
-    glad_glLinkProgram(program);
+    const GLuint render = glad_glCreateProgram();
+    shd_loadatt(render, "../shd/texture.vert.spv", GL_VERTEX_SHADER, "main");
+    shd_loadatt(render, "../shd/texture.frag.spv", GL_FRAGMENT_SHADER, "main");
+    glad_glLinkProgram(render);
     
     const GLint vpos_loc = 0;
     const GLint cam_loc = 1;
@@ -161,21 +179,27 @@ int main(void) {
     const GLint tex_loc = 0;
     const GLint const_bind = 1;
 
-    const GLint sphere_bind = 0;
-    const GLint fixed_bind = 1;
+    const GLint spos_bind = 0;
+    const GLint svelo_bind = 1;
+    const GLint fixed_bind = 2;
+    const GLint force_bind = 3;
     
     glad_glEnableVertexAttribArray(vpos_loc);
     glad_glVertexAttribPointer(vpos_loc, 2, GL_FLOAT, GL_FALSE, sizeof(float) * 2, (void *)0);
 
     glad_glBindBufferBase(GL_UNIFORM_BUFFER, const_bind, consts);
-    glad_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, sphere_bind, spheres);
+    glad_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, spos_bind, posses);
+    glad_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, svelo_bind, velos);
     glad_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, fixed_bind, fixed);
+    glad_glBindBufferBase(GL_SHADER_STORAGE_BUFFER, force_bind, forces);
     
+    glad_glUseProgram(pre_calc);
+    glad_glUniform1i(len_loc, side_len);
     glad_glUseProgram(physics);
     glad_glUniform1i(len_loc, side_len);
     glad_glUseProgram(raytrace);
     glad_glUniform1i(tex_loc, 0);
-    glad_glUseProgram(program);    
+    glad_glUseProgram(render);    
     glad_glUniform1i(tex_loc, 0);
 
     uint8_t velo = 0U;
@@ -186,7 +210,6 @@ int main(void) {
     time_t telapsed;
     bool run = true;
     while (run) {
-
         SDL_Event ev;
         while (SDL_PollEvent(&ev)) {
             switch (ev.type) {
@@ -210,11 +233,19 @@ int main(void) {
         SDL_GetWindowSize(window, &width, &height);
         glad_glViewport(0, 0, width, height);
 
-        // Start physics step
-        glad_glUseProgram(physics);
+        // Start pre calc
+        glad_glUseProgram(pre_calc);
        
         telapsed = (float)(SDL_GetPerformanceCounter() - tstart) / SDL_GetPerformanceFrequency() * 1000;
         tstart = SDL_GetPerformanceCounter();
+        glad_glUniform1f(time_loc, telapsed);
+        glad_glDispatchCompute(physics_dispatch_num, physics_dispatch_num, 1);
+
+        glad_glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+
+        // Start physics step
+        glad_glUseProgram(physics);
+       
         glad_glUniform1f(time_loc, telapsed);
         glad_glDispatchCompute(physics_dispatch_num, physics_dispatch_num, 1);
 
@@ -229,7 +260,7 @@ int main(void) {
         glad_glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
 
         // Display to screen
-        glad_glUseProgram(program);
+        glad_glUseProgram(render);
 
         glad_glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glad_glDrawArraysIndirect(GL_TRIANGLE_STRIP, 0);
@@ -239,9 +270,11 @@ int main(void) {
         SDL_GL_SwapWindow(window);
     }
     
-    glad_glDeleteProgram(program);
+    glad_glDeleteProgram(render);
+    glad_glDeleteProgram(raytrace);
+    glad_glDeleteProgram(physics);
     glad_glDeleteTextures(1, &ray_text);
-    glad_glDeleteBuffers(1, &vert_buff);
+    glad_glDeleteBuffers(8, buffs);
     SDL_DestroyRenderer(screen);
     SDL_DestroyWindow(window);
     SDL_Quit();

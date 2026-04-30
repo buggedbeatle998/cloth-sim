@@ -2,14 +2,11 @@
 
 layout (local_size_x = 32, local_size_y = 32) in;
 
-struct Sphere {
-    vec3 pos;
-    float rad;
-};
 
-layout (std140, binding = 0) readonly buffer Spheres {
-    Sphere spheres[];
-} spheres;
+layout (std140, binding = 0) readonly buffer Spheres_Pos {
+    vec3 pos[];
+} pos;
+
 
 layout (rgba32f, location = 0) writeonly uniform image2D tex;
 layout (location = 1) uniform mat2x3 cam;
@@ -26,8 +23,8 @@ layout (std140, binding = 1) readonly uniform pconst {
 };
 
 
-
 const vec2 consts = vec2(0.0, 0.1);
+const float rad = 0.2;
 const float half_pi = 1.571;
 
 
@@ -54,18 +51,18 @@ void main(void) {
         vec3 ray_pos = cam[0];
         float shade = 1.0;
         
-        uint num = spheres.spheres.length();
+        uint num = pos.pos.length();
         bool hit = false;
         float dist;
         vec3 _change;
         vec3 _norm;
         uint i;
         for (i = 0; i < num; ++i) {
-            Sphere sphere = spheres.spheres[i];
-            vec3 diff = sphere.pos - ray_pos;
+            vec3 pos = pos.pos[i];
+            vec3 diff = pos - ray_pos;
             float mid = dot(diff, start);
             float discrim = fma(mid, mid, -dot(diff, diff));
-            discrim = fma(sphere.rad, sphere.rad, discrim);
+            discrim = fma(rad, rad, discrim);
             if (discrim < 0)
                 continue;
             mid -= sqrt(discrim);

@@ -2,25 +2,30 @@
 
 layout (local_size_x = 32, local_size_y = 32) in;
 
-struct Sphere {
-    vec3 pos;
-    float rad;
-};
 
-layout (std140, binding = 0) buffer Spheres {
-    Sphere spheres[];
-} spheres;
-
-layout (std140, binding = 1) readonly buffer Fixed {
-    int fixed_spheres[];
-} fixed_spheres;
+layout (std140, binding = 0) buffer Spheres_Pos {
+    vec3 pos[];
+} pos;
+layout (std140, binding = 1) buffer Spheres_Velo {
+    vec3 velo[];
+} velo;
+layout (std430, align = 16, binding = 2) readonly buffer Spheres_Fixed {
+    int sfixed[];
+} sfixed;
+layout (std140, binding = 3) readonly buffer Temp_Forces {
+    vec3 force[];
+} force;
 
 layout (location = 0) uniform int side_len;
 layout (location = 1) uniform float dt;
 
 
-float grav = 9.8;
-float sprk = 1.0;
+const vec2 consts = vec2(0.0, 0.1);
+const float mass = 0.01;
+const float inv_mass = 1.0 / mass;
+
+
+bool search_fixed(int idx);
 
 
 void main(void) {
@@ -28,9 +33,38 @@ void main(void) {
 
     if (all(lessThan(id, vec2(side_len)))) {
         int idx = id.x * side_len + id.y;
-        float realdt = dt / 1000;
+        //if (search_fixed(idx))
+        //    return;
+        for (int i = 0; i < sfixed.sfixed.length() / 4; ++i)
+            if (sfixed.sfixed[i] == idx)
+                return;
+        float realdt = dt * 0.001;
+        
+        vec3 _velo = velo.velo[idx];
 
-        spheres.spheres[idx].pos.y += realdt;
+        _velo = fma(force.force[idx], vec3(inv_mass * realdt), _velo);
+
+        _velo *= pow(0.1, realdt);
+
+        pos.pos[idx] = fma(_velo, vec3(realdt), pos.pos[idx]);
+        velo.velo[idx] = _velo;
     }
 }
 
+
+//bool search_fixed(int idx) {
+//    int left = 0;
+//    int right = sfixed.sfixed.length();
+//    int mid, val;
+//    while (right > left) {
+//        mid = (left + right) >> 1;
+//        val = sfixed.sfixed[mid];
+//        if (idx == val)
+//            return true;
+//        else if (idx < val)
+//            right = mid - 1;
+//        else
+//            left = mid + 1;
+//    }
+//    return false;
+//}
